@@ -1,0 +1,500 @@
+
+Skip to content
+
+Cinta Programming
+
+A hacker does for love what others would not do for money.
+Memahami Static dan Shared Library di Linux
+
+Saya masih sering melihat programmer C dan juga administrator yang bingung dengan konsep shared library. Shared library adalah file berisi kode yang bisa diload saat program dieksekusi (runtime). Karena diload pada runtime, maka sebuah shared library bisa digunakan oleh lebih dari satu program.
+
+Penjelasan mengenai static dan shared library biasanya membingungkan, jadi di posting ini saya akan menjelaskan dengan banyak contoh. Sebenarnya hampir semua contoh di tulisan ini berlaku juga untuk lingkungan POSIX lain selain Linux, tapi saya hanya mencoba kode ini di Linux 64 bit dengan compiler gcc. Di balik layar, program gcc sebenarnya akan memanggil berbagai program lain (preprocessor, assembler, linker) tergantung pada parameter yang kita berikan tapi agar penjelasannya sederhana, saya akan memakai gcc saja dan tidak akan menjelaskan apa yang terjadi di balik layar.
+Kode monolitik
+
+Kita mulai dari kode yang sangat sederhana seperti ini:
+/*file: main.c */
+#include <stdio.h>
+ 
+double operation(double a, double b)
+{
+        printf("Plus operation\n");
+        return a+b;
+}
+ 
+int main(int argc, char *argv[])
+{
+        double a = 5;
+        double b = 3;
+        printf("Result of operation (%.2f, %.2f) is: %.2f\n", a, b, operation(a, b));
+        return 0;
+}
+
+Karena semua sudah ada di satu file, maka ini bisa dikompilasi dan jalankan langsung.
+gcc main.c -o main
+Memecah source code
+
+Di sini ada satu fungsi bernama operation yang hanya melakukan operasi sangat sederhana. Anggap saja fungsi ini rumit dan penting dan ingin kita pisahan agar bisa dipakai oleh orang lain. Sekarang operation saya pindahkan ke operation.c
+/*file: operation.c */
+#include <stdio.h>
+ 
+double operation(double a, double b)
+{
+        printf("Plus operation\n");
+        return a+b;
+}
+
+Dan kode main menjadi:
+/*file: main1.c */
+#include <stdio.h>
+ 
+int main(int argc, char *argv[])
+{
+        int a = 5;
+        int b = 3;
+        printf("Result of operation (%d, %d) is: %d\n", a, b, operation(a, b));
+        return 0;
+}
+
+Jika kita coba compile main.c saja, seperti ini:
+gcc main.c -o main
+
+maka akan ada warning DAN error. Isi errornya adalah:
+
+/tmp/cc08zl1h.o: In function `main':
+main2.c:(.text+0x45): undefined reference to `operation'
+collect2: error: ld returned 1 exit status
+
+Ini karena compiler tidak bisa menemukan implementasi dari fungsi operation. Kita perlu memberikan file operation.c
+gcc main1.c operation.c -o main
+
+Sekarang kompilasi berhasil, tapi tetap ada peringatan:
+
+implicit declaration of function ‘operation’
+
+Compiler C tidak tahu menahu mengenai fungsi bernama operation. Secara default (karena alasan sejarah), compiler akan menganggap fungsi tersebut mengembalikan sebuah int
+
+Jika kita coba jalankan:
+
+Plus operation
+Result of operation (5.00, 3.00) is: 0.00
+
+Hasilnya 0.00 karena fungsi operation dianggap mengembalikan int. Ini bisa diperbaiki dengan menambahkan deklarasi fungsi sebelum main:
+/*file: main2.c */
+#include <stdio.h>
+ 
+/* INI YANG DITAMBAHKAN */
+double operation(double a, double b);
+ 
+int main(int argc, char *argv[])
+{
+        int a = 5;
+        int b = 3;
+        printf("Result of operation (%d, %d) is: %d\n", a, b, operation(a, b));
+        return 0;
+}
+
+Sekarang kita coba lain:
+$ gcc main2.c operation.c -o main
+
+Dan berhasil:
+
+Plus operation
+Result of operation (5.00, 3.00) is: 8.00
+
+Object code
+
+Tapi sekarang kita tidak ingin orang mengetahui source code operation.c, kita bisa menjadikan operation.c menjadi object code:
+$ gcc -c operation.c
+
+Hasilnya adalah file operation.o. Ini bisa dikirimkan ke orang lain yang memiliki main.c dan kompilasi bisa dilakukan dengan (perhatikan: operation.c diganti menjadi .o)
+$ gcc main2.c operation.o -o main
+
+Tapi ada satu masalah di sini: penerima operation.o tidak tahu fungsi apa di dalam operation.o dan apa parameternya. Sebenarnya nama fungsinya saja bisa dilihat dengan nm atau objdump tapi apa parameternya tidak bisa. Contoh dengan nm:
+$ nm operation.o
+                 U _GLOBAL_OFFSET_TABLE_
+0000000000000000 T operation
+                 U puts
+File Header
+
+Untuk memudahkan, kita perlu membuat file header: operation.h, isinya bisa seperti ini saja:
+double operation(double a, double b);
+
+Dan di file yang memakai fungsi tadi, bisa menggunakan include:
+/*file: main3.c */
+#include <stdio.h>
+/* INI YANG DITAMBAHKAN */
+#include "operation.h"
+ 
+/*ini tidak lagi diperlukan, karena sudah diinclude dari operation.h*/
+/*double operation(double a, double b);*/
+ 
+int main(int argc, char *argv[])
+{
+        int a = 5;
+        int b = 3;
+        printf("Result of operation (%d, %d) is: %d\n", a, b, operation(a, b));
+        return 0;
+}
+
+Sekarang kita sudah bisa mengirimkan file operation.h dan operation.o untuk dipakai oleh seseorang. Orang tersebut tidak tahu implementasinya (kecuali dengan dekompilasi), dan bisa memakai fungsinya dengan mudah. Perlu dicatat bahwa ada beberapa standar file object, secara umum: file dari compiler yang sama akan kompatibel, tapi tidak dijamin kompatibel dengan kode dari compiler yang berbeda.
+
+Biasanya file header tidak hanya berisi deklarasi fungsi, tapi juga deklarasi struktur, misalnya seperti ini:
+struct point {
+int x, y;
+};
+ 
+void init_point(struct point *p);
+
+Jika file ini di-include sekali saja, maka tidak ada masalah. Tapi jika tidak sengaja diinclude dua kali, maka akan ada error:
+
+ error: redefinition of ‘struct point’
+
+Bagaimana mungkin menginclude “tidak sengaja” dua kali (atau lebih?). Contohnya ada file circle.h menginclude file point.h, dan file square.h juga menginclude point.h. Jika program utama menginclude circle.h dan square.h maka point.h akan diinclude dua kali. Masalah ini sering muncul sehingga ada konvensi membuat header seperti ini:
+#ifndef POINT_H
+#define POINT_H
+struct point {
+int x, y;
+};
+ 
+void init_point(struct point *p);
+#endif
+
+Ketika file diinclude kali pertama, semuanya akan normal dan POINT_H akan terdefinisi. Jika diinclude lagi, maka tidak akan terjadi apa-apa karen POINT_H sudah terdefinisi.
+
+Sekarang ada masalah baru. Andaikan kita ubah operation.c sehingga menggunakan int, tapi lupa mengubah header operation.h
+/*file: operation.c */
+#include <stdio.h>
+ 
+int operation(int a, int b)
+{
+        printf("Plus operation\n");
+        return a+b;
+}
+
+Maka semuanya akan berhasil dicompile seperti semula, tapi hasilnya tidak seperti yang diharapkan. Untuk mengatasi ini, kita sebaiknya menginclude header di implementasi, seperti ini:
+/*file: operation.c */
+#include <stdio.h>
+/* BARIS INI DITAMBAHKAN */
+#include "operation.h"
+ 
+int operation(int a, int b)
+{
+        printf("Plus operation\n");
+        return a+b;
+}
+
+Sekarang jika deklarasi dan implementasi tidak konsisten akan mucul error:
+
+operation.c:5:5: error: conflicting types for ‘operation’
+ int operation(int a, int b)
+     ^~~~~~~~~
+In file included from operation.c:3:0:
+operation.h:4:8: note: previous declaration of ‘operation’ was here
+ double operation(double a, double b);
+
+Static Library
+
+Sekarang header kita sudah bagus. Tapi ada masalah lain: jika hanya ada satu file saja, maka satu file objek sudah cukup. Tapi jika ada banyak file objek, ini akan merepotkan. Contohnya saja, jika kita memiliki kode untuk menangani bentuk, dan menggunakan banyak objek seperti: circle.o, square.o, polygon.o, dsb, maka kompilasinya akan cukup repot (perintahnya menjadi panjang). Berbagai file objek bisa disusun jadi satu library statik untuk memudahkan kompilasi.
+
+Kita bisa menyusun satu file saja:
+ar rcs libop.a operation.o
+
+Atau banyak file
+ar rcs libop.a operation.o operation2.o
+
+Progam “ar” akan menciptakan arsip library, dengan flag “c” untuk membuat library (create) jika belum ada, “r” untuk menggantikan (replace) file operation.o jika sudah ada di arsip dan “s” untuk membuat indeks. Kita bisa melihat isi arsip .a dengan parameter “t” (test):
+ar t libop.a
+
+Sudah menjadi konvensi untuk menamai suatau library statik dengan prefiks lib dan dengan suffiks a. Kita bisa memakai library ini ketika mengkompilasi dengan menggunakan opsi l diikuti nama library tanpa prefix lib (cukup:op saja)di gcc:
+gcc main3.c -lop
+
+Tapi ini akan error:
+
+/usr/bin/ld: cannot find -lop
+collect2: error: ld returned 1 exit status
+
+Karena defaultnya gcc hanya mencari di path library. Path standar ini bisa dilihat dengan:
+$ gcc -v -Wl,verbose 2>&1|grep LIBRARY
+
+Di komputer saya outputnya seperti ini:
+
+LIBRARY_PATH=/usr/lib/gcc/x86_64-linux-gnu/7/:/usr/lib/gcc/x86_64-linux-gnu/7/../../../x86_64-linux-gnu/:/usr/lib/gcc/x86_64-linux-gnu/7/../../../../lib/:/lib/x86_64-linux-gnu/:/lib/../lib/:/usr/lib/x86_64-linux-gnu/:/usr/lib/../lib/:/usr/lib/gcc/x86_64-linux-gnu/7/../../../:/lib/:/usr/lib/
+
+Intinya: kita bisa memindahkan file libop.a ke salah satu direktori tersebut, atau cukup beritahu path tempat library kita berada. Karena berada di direktori saat ini, kita bisa memakai titik tunggal (.):
+gcc main3.c -L. -lop -o main
+
+Sekarang program berhasil dilink dengan library, dan berjalan seperti biasa. Sebagai catatan, sebenarnya gcc juga mengijinkan kita langsung menyebut nama file librarynya, walau biasanya ini jarang dilakukan
+gcc main3.c libop.a -o main
+
+Andaikan kita salah melink ke library yang tidak mengandung implementasi fungsi operation, maka akan muncul error:
+
+main.c:(.text+0x40): undefined reference to `operation'
+collect2: error: ld returned 1 exit status
+
+Ketika kita menggunakan static library, maka kode dari library tersebut di “copy paste” ke file executable. Untuk menjalankan program kita, kita tidak butuh lagi libop.a karena kodenya sudah ada di executable. Jika ada program lain yang memakai library yang sama, program itu mengandung kode yang sama (duplikat).
+
+Andaikan kita mengupdate operation.c dengan versi yang lebih baik (misalnya ada perbaikan bug, atau ada optimasi baru) maka kita harus mengcompile ulang program kita agar mendapatkan perbaikan tersebut.
+Shared Library
+
+Dalam kasus tertentu kita ingin agar hanya ada satu kode saja yang dipakai bersama. Misalnya sebuah XML parser dipakai oleh banyak program, jika ada update pada parser XML kita tidak ingin mengkompilasi ulang seluruh program yang memakai library tersebut. Dalam kasus ini kita sebaiknya menggunakan shared library. Satu library yang bisa dipakai banyak program.
+
+Untuk mengcompile operation.c menjadi shared library bisa dilakukan dengan:
+gcc -fPIC -shared operation.c -o libop.so
+
+Cara kompilasi juga sama dengan static library (jika ada libop.a dan libop.so, maka yang .so diprioritaskan):
+gcc main3.c -L. -lop -o main
+
+atau:
+gcc main3.c libop.so -o main
+
+Tapi jika kita coba jalankan:
+$ main
+./main: error while loading shared libraries: libop.so: cannot open shared object file: No such file or directory
+
+Kode dari libop.so tidak disalin ke executable dan masih ada di libop.so, jika kita ingin menjalankan kita harus melakukan salah satu dari ini: menyalin libop.so ke path library sistem, menambahkan path system baru (bisa mengedit /etc/ld.so.conf) atau memberikan pathnya dengan LD_LIBRARY_PATH.
+
+Untuk melihat pencarian yang dilakukan oleh sistem:
+$ ldconfig -v
+
+Jika kita mengubah file /etc/ld.so.conf, kita perlu menjalankan ldconfig sebagai root untuk mengupdate cache.
+
+Cara termudah tanpa akses root adalah menambahkan ke environment LD_LIBRARY_PATH (titik adalah direktori saat ini, bisa saja diganti path lain, misalnya /home/yohanes/mylibs).
+$ export LD_LIBRARY_PATH=. 
+$ ./main
+Plus operation
+Result of operation (5.00, 3.00) is: 8.00
+
+Cara di atas akan membuat semua perintah berikutnya menggunakan path library yang baru. Jika kita hanya sekedar ingin mengubah path untuk satu perintah saja, maka cara ini lebih baik:
+$ LD_LIBRARY_PATH=. ./main
+Plus operation
+Result of operation (5.00, 3.00) is: 8.00
+Fleksibilitas shared library
+
+Sekarang kita lihat fleksibilitas shared library dengan membuat shared library baru dengan nama sama. Saya membuat file baru: operation-mult.c yang mengalikan operand.
+#include <stdio.h>
+ 
+double operation(double a, double b)
+{
+    printf("Multiply operation\n");
+    return a*b;
+}
+
+Agar lebih jelas, saya masukkan file ini dalam direktori “op-mult”. Lalu saya compile seperti ini:
+gcc -fPIC -shared op-mult/operation-mult.c -o op-mult/libop.so
+
+Sekarang jika saya jalankan program sebelumnya, tapi dengan path libop.so yang berbeda:
+$ LD_LIBRARY_PATH=./op-mult ./main
+Multiply operation
+Result of operation (5.00, 3.00) is: 15.00
+
+Output program berubah: dari penjumlahan menjadi perkalian. Jika kita memiliki lebih dari satu library dengan nama yang sama di path yang berbeda, maka library yang ditemukan pertama akan diload
+
+$ LD_LIBRARY_PATH=./op-mult:. ./main
+Multiply operation
+Result of operation (5.00, 3.00) is: 15.00
+[/code]
+
+Bagaimana jika kita punya file yang kebetulan namanya sama, tapi tidak memiliki fungsi yang kita butuhkan? Hasilnya akan error:
+
+./main: symbol lookup error: ./main: undefined symbol: operation
+
+Override Fungsi dengan LD_PRELOAD
+
+Ada trik menarik yang bisa dilakukan dengan menggunakan shared library, yaitu mengganti implementasi fungsi lain dengan fungsi milik kita sendiri. Trik ini bisa dipakai untuk runtime patching.
+
+Dengan menggunakan program ltrace kita bisa melihat fungsi library apa yang dipanggil oleh sebuah program. Untuk mudahnya, kita akan memakai program paling pertama, yang tidak memakai library, versi monolitik:
+
+ltrace ./main
+puts("Plus operation"Plus operation
+)                                                = 15
+printf("Result of operation (%d, %d) is:"..., 5, 3, 8Result of operation (5, 3) is: 8
+)                = 33
++++ exited (status 0) +++
+
+Ada 2 call yang dibuat oleh program tersebut: puts dan printf. Sebenarnya di dalam program kita memakai printf saja, tapi compiler mengoptimasi printf tanpa parameter tambahan menjadi puts saja. Jika kita meminta compiler untuk tidak menghapus file assembly dengan opsi -S
+$ gcc -S main.c -o main
+
+Maka kita bisa melihat bahwa dalam operation memang digunakan puts sedangkan dalam main digunakan printf:
+
+Cara lain melihat ini adalah dengan objdump -d nama_executable untuk melihat kodenya.
+
+Untuk mudahnya sekarang kita ingin mengganti puts agar melakukan hal lain: mencetak string “EXTRA” sebelum mencetak string yang seharusnya.
+/*file: myputs.c*/
+ 
+#define _GNU_SOURCE  
+#include <dlfcn.h>
+ 
+int (*orig_puts)(const char *s);
+ 
+int puts(const char *s)
+{
+        if (orig_puts == 0) {
+                orig_puts = dlsym(RTLD_NEXT, "puts");
+        }
+        orig_puts("EXTRA: ");
+        return orig_puts(s);
+}
+
+Lalu compile filenya sebagai shared library, tapi sertakan juga libdl (untuk fungsi dlsym).
+$ LD_PRELOAD=./libmyputs.so ./main-standalone
+EXTRA: 
+Plus operation
+Result of operation (5, 3) is: 8
+
+Dalam kode pengganti milik kita, pertama yang dilakukan adalah mencari alamat fungsi “puts” yang asli, lalu meletakkannya di variabel bernama orig_puts (tiipenya adalah sebuah function pointer). Setelah itu kita bisa memanggil fungsi aslinya. Tentunya kita tidak harus memanggil fungsi aslinya jika memang ingin mengganti seluruhnya.
+
+Beberapa kegunaan LD_PRELOAD ini misalnya: untuk membetulkan bug tanpa mengubah program. Kadang ini juga bisa digunakan untuk testing, jika sebuah program memakai random, lalu crash hanya jika nilai tertentu dihasilkan oleh random, maka kita bisa menggunakan LD_PRELOAD untuk mengganti fungsi random agar nilai kembaliannya sebuah nilai yang tetap.
+
+LD_PRELOAD Ini juga bisa digunakan untuk cracking program, misalnya jika program hanya bisa berjalan hanya sebelum expiration date, maka kita bisa membuat fungsi time() yang selalu mengembalikan tanggal tertentu.
+Penutup
+
+Pemahaman mengenai library bisa membantu menyelesaikan banyak masalah dan tidak perlu coba-coba yang memakan banyak waktu. Semoga posting ini cukup menjelaskan seluk beluk library di Linux.
+Share this:
+
+    Click to share on Twitter (Opens in new window)Click to share on Facebook (Opens in new window)
+
+Related
+
+Membaca Source CodeOctober 2, 2018In "umum"
+
+Mendalami Bahasa CJune 20, 2018In "c"
+
+Assembler di browser berbasis Keystone dengan WebAssemblyMay 2, 2020In "c"
+Published February 14, 2018By admin
+Categorized as linux, teknis
+4 comments
+
+    Pingback: Modifikasi Aplikasi Android – Cinta Programming
+    Pingback: Mendalami Bahasa C – Cinta Programming
+    @hadioz
+    March 5, 2021 at 10:39 pm
+
+    trimakasih ini sangat membantu saya
+    Reply
+    Softscients
+    May 17, 2021 at 3:58 pm
+
+    Mantap sekali yaaa
+    Jelas
+    https://softscients.com
+    Reply
+
+Leave a comment
+
+Your email address will not be published. Required fields are marked *
+
+Comment
+
+Name *
+
+Email *
+
+Website
+
+Notify me of follow-up comments by email.
+
+Notify me of new posts by email.
+
+This site uses Akismet to reduce spam. Learn how your comment data is processed.
+Post navigation
+
+Previous post
+
+Mengapa memakai bahasa pemrograman tertentu?
+
+Next post
+
+Memprogram Apa Saja
+Search…
+Recent Posts
+
+    Kisah Quick Fix Aplikasi Web PHP 5
+    Mencoba Bahasa Dart dan SDK Flutter
+    Assembler di browser berbasis Keystone dengan WebAssembly
+    Bahasa Pemrograman BASIC
+    Multithreading dan Multiprocessing di Python
+
+Recent Comments
+
+    Mengenal 7 Keunggulan Aplikasi Telegram Messenger on Membuat Bot Telegram
+    Softscients on Memahami Static dan Shared Library di Linux
+    Apakah harus belajar matematika terlebih dahulu sebelum belajar pemrograman? – Himpunan Mahasiswa Matematika on Matematika dan Programming
+    @hadioz on Memahami Static dan Shared Library di Linux
+    tisubasa on Bahasa Pemrograman BASIC
+
+Archives
+
+    July 2020
+    June 2020
+    May 2020
+    November 2019
+    August 2019
+    April 2019
+    December 2018
+    November 2018
+    October 2018
+    August 2018
+    July 2018
+    June 2018
+    May 2018
+    April 2018
+    March 2018
+    February 2018
+    August 2016
+    July 2016
+    July 2015
+    May 2015
+    February 2015
+    January 2015
+    November 2014
+    March 2014
+    September 2013
+    August 2012
+    July 2012
+    June 2012
+    January 2012
+    December 2011
+    November 2011
+    July 2011
+    April 2011
+    October 2010
+    August 2010
+    July 2010
+    April 2010
+    March 2010
+    February 2010
+    July 2009
+    May 2009
+
+Categories
+
+    android
+    bahasa
+    bit
+    buku
+    c
+    hardware
+    html5
+    iseng
+    javascript
+    linux
+    lua
+    php
+    playbook
+    python
+    security
+    teknis
+    tutorial
+    umum
+    Uncategorized
+
+Meta
+
+    Log in
+    Entries feed
+    Comments feed
+    WordPress.org
+
+Cinta Programming
+Proudly powered by WordPress.
+
